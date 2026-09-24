@@ -1,0 +1,35 @@
+# ---- Unreal Engine 自动生成的目录（体积巨大，绝不提交）----
+/Binaries/
+/Build/
+/DerivedDataCache/
+/Intermediate/
+/Saved/
+/.vs/
+/.vscode/
+/.idea/
+
+# ---- 生成文件 ----
+*.sln
+*.suo
+*.VC.db
+*.opensdf
+*.sdf
+*.xcodeproj
+*.xcworkspace
+
+# ---- 第三方 / 教程美术资源（体积大且有版权，不公开）----
+# 完整工程含大量 Marketplace 资源（约 13.8 GB），未包含在本仓库中。
+# 需要运行完整工程时请自备对应资源包。
+/Content/
+
+# ---- 其他 ----
+/Source.zip
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ---- 第三方美术/音频素材（Paladin 动画、音效，约 38 MB）----
+/Assets/
+
+# ---- 源码压缩包（与 Source/ 内容重复）----
+/Source.rar

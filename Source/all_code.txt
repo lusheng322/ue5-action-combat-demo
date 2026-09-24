@@ -1,0 +1,2716 @@
+﻿C:\UE_project\Slash\Source\Slash\Private\Actors\Treasures\Treasure.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Actors/Treasures/Treasure.h"
+#include "Interface/PickupInterface.h"
+#include "Components/SphereComponent.h"
+
+void ATreasure::OnSphereOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
+{
+	IPickupInterface* PickupInterface = Cast<IPickupInterface>(OtherActor);
+	if (PickupInterface)
+	{
+		PickupInterface->AddGold(this);
+		SpawnPickupSound();
+		Destroy();
+	}
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Actors\Weapons\Weapon.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Actors/Weapons/Weapon.h"
+#include "Character/SlashCharacter.h"
+#include "Kismet/GameplayStatics.h"
+#include "Components/SphereComponent.h"
+#include "Components/BoxComponent.h"
+#include "Kismet/KismetSystemLibrary.h"
+#include "Interface/HitInterface.h"
+#include "NiagaraComponent.h"
+
+AWeapon::AWeapon()
+{
+	WeaponBox = CreateDefaultSubobject<UBoxComponent>(TEXT("Weapon Box"));
+	WeaponBox->SetupAttachment(GetRootComponent());
+	WeaponBox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	WeaponBox->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Overlap);
+	WeaponBox->SetCollisionResponseToChannel(ECollisionChannel::ECC_Pawn, ECollisionResponse::ECR_Ignore);
+
+	BoxTraceStart = CreateDefaultSubobject<USceneComponent>(TEXT("Box Trace Start"));
+	BoxTraceStart->SetupAttachment(GetRootComponent());
+
+	BoxTraceEnd = CreateDefaultSubobject<USceneComponent>(TEXT("Box Trace End"));
+	BoxTraceEnd->SetupAttachment(GetRootComponent());
+}
+
+void AWeapon::BeginPlay()
+{
+	Super::BeginPlay();
+
+	WeaponBox->OnComponentBeginOverlap.AddDynamic(this, &AWeapon::OnBoxOverlap);
+}
+
+void AWeapon::Equip(USceneComponent* InParent, FName InSocketName, AActor* NewOwner, APawn* NewInstigator)
+{
+	ItemState = EItemState::EIS_Equipped;
+	SetOwner(NewOwner);
+	SetInstigator(NewInstigator);
+	AttachMeshToSocket(InParent, InSocketName);
+	DisableSphereCollision();
+	PlayEquipSound();
+	DeactivateEmbers();
+}
+
+void AWeapon::DeactivateEmbers()
+{
+	if (ItemEffect)
+	{
+		ItemEffect->Deactivate();
+	}
+}
+
+void AWeapon::DisableSphereCollision()
+{
+	if (Sphere)
+	{
+		Sphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+}
+
+void AWeapon::PlayEquipSound()
+{
+	if (EquipSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(
+			this,
+			EquipSound,
+			GetActorLocation()
+		);
+	}
+}
+
+void AWeapon::AttachMeshToSocket(USceneComponent* InParent, const FName& InSocketName)
+{
+	FAttachmentTransformRules TransformRules(EAttachmentRule::SnapToTarget, true);
+	ItemMesh->AttachToComponent(InParent, TransformRules, InSocketName);
+}
+
+void AWeapon::OnBoxOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
+{
+	if (ActorIsSameType(OtherActor)) return;
+
+	FHitResult BoxHit;
+	BoxTrace(BoxHit);
+
+	if (BoxHit.GetActor())
+	{
+		if (ActorIsSameType(BoxHit.GetActor())) return;
+
+		UGameplayStatics::ApplyDamage(BoxHit.GetActor(), Damage, GetInstigator()->GetController(), this, UDamageType::StaticClass());
+		ExecuteGetHit(BoxHit);
+		CreateFields(BoxHit.ImpactPoint);
+	}
+
+}
+
+bool AWeapon::ActorIsSameType(AActor* OtherActor)
+{
+	return GetOwner()->ActorHasTag(TEXT("Enemy")) && OtherActor->ActorHasTag(TEXT("Enemy"));
+}
+
+void AWeapon::ExecuteGetHit(FHitResult& BoxHit)
+{
+	IHitInterface* HitInterface = Cast<IHitInterface>(BoxHit.GetActor());
+	if (HitInterface)
+	{
+		HitInterface->Execute_GetHit(BoxHit.GetActor(), BoxHit.ImpactPoint, GetOwner());
+	}
+}
+
+void AWeapon::BoxTrace(FHitResult& BoxHit)
+{
+	const FVector Start = BoxTraceStart->GetComponentLocation();
+	const FVector End = BoxTraceEnd->GetComponentLocation();
+
+	TArray<AActor*> ActorsToIgnore;
+	ActorsToIgnore.Add(this);
+
+	for (AActor* Actor : IgnoreActors)
+	{
+		ActorsToIgnore.AddUnique(Actor);
+	}
+
+	UKismetSystemLibrary::BoxTraceSingle(
+		this,
+		Start,
+		End,
+		BoxTraceExtent,
+		BoxTraceStart->GetComponentRotation(),
+		ETraceTypeQuery::TraceTypeQuery1,
+		false,
+		ActorsToIgnore,
+		bShowBoxDebug ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		BoxHit,
+		true
+	);
+	IgnoreActors.AddUnique(BoxHit.GetActor());
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Actors\Item.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Actors/Item.h"
+#include "Slash/DebugMacros.h"
+#include "Components/SphereComponent.h"
+#include "Interface/PickupInterface.h"
+#include "NiagaraComponent.h"
+#include "NiagaraFunctionLibrary.h"
+#include "Kismet/GameplayStatics.h"
+
+AItem::AItem()
+{
+	PrimaryActorTick.bCanEverTick = true;
+
+	ItemMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ItemMeshComponent"));
+	ItemMesh->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore);
+	ItemMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	RootComponent = ItemMesh;
+
+	Sphere = CreateDefaultSubobject<USphereComponent>(TEXT("Sphere"));
+	Sphere->SetupAttachment(GetRootComponent());
+
+	ItemEffect = CreateDefaultSubobject<UNiagaraComponent>(TEXT("Embers"));
+	ItemEffect->SetupAttachment(GetRootComponent());
+}
+
+void AItem::BeginPlay()
+{
+	Super::BeginPlay();
+
+	Sphere->OnComponentBeginOverlap.AddDynamic(this, &AItem::OnSphereOverlap);
+	Sphere->OnComponentEndOverlap.AddDynamic(this, &AItem::OnSphereEndOverlap);
+}
+
+float AItem::TransformedSin()
+{
+	return Amplitude * FMath::Sin(RunningTime * TimeConstant);
+}
+
+float AItem::TransformedCos()
+{
+	return Amplitude * FMath::Cos(RunningTime * TimeConstant);
+}
+
+void AItem::OnSphereOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
+{
+	IPickupInterface* PickupInterface = Cast<IPickupInterface>(OtherActor);
+	if (PickupInterface)
+	{
+		PickupInterface->SetOverlappingItem(this);
+	}
+}
+
+void AItem::OnSphereEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex)
+{
+	IPickupInterface* PickupInterface = Cast<IPickupInterface>(OtherActor);
+	if (PickupInterface)
+	{
+		PickupInterface->SetOverlappingItem(nullptr);
+	}
+}
+
+void AItem::SpawnPickupSystem()
+{
+	if (PickupEffect)
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			this,
+			PickupEffect,
+			GetActorLocation()
+		);
+	}
+}
+
+void AItem::SpawnPickupSound()
+{
+	if (PickupSound)
+	{
+		UGameplayStatics::SpawnSoundAtLocation(
+			this,
+			PickupSound,
+			GetActorLocation()
+		);
+	}
+}
+
+void AItem::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+	RunningTime += DeltaTime;
+
+	if (ItemState == EItemState::EIS_Hovering)
+	{
+		AddActorWorldOffset(FVector(0.f, 0.f, TransformedSin()));
+	}
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Actors\Soul.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Actors/Soul.h"
+#include "Interface/PickupInterface.h"
+
+void ASoul::OnSphereOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
+{
+	IPickupInterface* PickupInterface = Cast<IPickupInterface>(OtherActor);
+	if (PickupInterface)
+	{
+		PickupInterface->AddSouls(this);
+		SpawnPickupSound();
+		SpawnPickupSystem();
+		Destroy();
+	}
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Breakable\BreakableActor.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Breakable/BreakableActor.h"
+#include "GeometryCollection/GeometryCollectionComponent.h"
+#include "Actors/Treasures/Treasure.h"
+#include "Components/CapsuleComponent.h"
+
+ABreakableActor::ABreakableActor()
+{
+	PrimaryActorTick.bCanEverTick = false;
+
+	GeometryCollection = CreateDefaultSubobject<UGeometryCollectionComponent>(TEXT("GeometryCollection"));
+	SetRootComponent(GeometryCollection);
+	GeometryCollection->SetGenerateOverlapEvents(true);
+	GeometryCollection->SetCollisionResponseToChannel(ECollisionChannel::ECC_Camera, ECollisionResponse::ECR_Ignore);
+	GeometryCollection->SetCollisionResponseToChannel(ECollisionChannel::ECC_Pawn, ECollisionResponse::ECR_Ignore);
+
+	Capsule = CreateDefaultSubobject<UCapsuleComponent>(TEXT("Capsule"));
+	Capsule->SetupAttachment(GetRootComponent());
+	Capsule->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore);
+	Capsule->SetCollisionResponseToChannel(ECollisionChannel::ECC_Pawn, ECollisionResponse::ECR_Block);
+}
+
+void ABreakableActor::BeginPlay()
+{
+	Super::BeginPlay();
+	
+}
+
+void ABreakableActor::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+}
+
+void ABreakableActor::GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter)
+{
+	UWorld* World = GetWorld();
+	if (World && TreasureClasses.Num() > 0)
+	{
+		if (bBroken) return;
+		bBroken = false;
+		FVector Location = GetActorLocation();
+		Location.Z += 75.f;
+		const int32 Selection = FMath::RandRange(0, TreasureClasses.Num() - 1);
+		World->SpawnActor<ATreasure>(TreasureClasses[Selection], Location, GetActorRotation());
+	}
+}
+
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Character\BaseCharacter.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Character/BaseCharacter.h"
+#include "Components/BoxComponent.h"
+#include "Actors/Weapons/Weapon.h"
+#include "Components/AttributeComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Kismet/GameplayStatics.h"
+
+ABaseCharacter::ABaseCharacter()
+{
+	PrimaryActorTick.bCanEverTick = true;
+
+	Attributes = CreateDefaultSubobject<UAttributeComponent>(TEXT("Attributes"));
+	GetCapsuleComponent()->SetCollisionResponseToChannel(ECollisionChannel::ECC_Camera, ECollisionResponse::ECR_Ignore);
+}
+
+void ABaseCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+
+}
+
+void ABaseCharacter::GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter)
+{
+	if (IsAlive() && Hitter)
+	{
+		DirectionalHitReact(Hitter->GetActorLocation());
+	}
+	else Die();
+
+	PlayHitSound(ImpactPoint);
+	SpawnHitParticles(ImpactPoint);
+	
+}
+
+void ABaseCharacter::Attack()
+{
+	if (CombatTarget && CombatTarget->ActorHasTag(FName("Dead")))
+	{
+		CombatTarget = nullptr;
+	}
+}
+
+void ABaseCharacter::Die()
+{
+	PlayDeathMontage();
+	Tags.Add(FName("Dead"));
+}
+
+void ABaseCharacter::PlayHitReactMontage(const FName& SectionName)
+{
+	UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
+	if (AnimInstance && HitReactMontage)
+	{
+		AnimInstance->Montage_Play(HitReactMontage);
+		AnimInstance->Montage_JumpToSection(SectionName, HitReactMontage);
+	}
+}
+
+void ABaseCharacter::DirectionalHitReact(const FVector& ImpactPoint)
+{
+	const FVector Forward = GetActorForwardVector();
+	// Lower Impact Point to the Enemy's Actor Location Z
+	const FVector ImpactLowered(ImpactPoint.X, ImpactPoint.Y, GetActorLocation().Z);
+	const FVector ToHit = (ImpactLowered - GetActorLocation()).GetSafeNormal();
+
+	// Forward * ToHit = |Forward||ToHit| * cos(theta)
+	// |Forward| = 1, |ToHit| = 1, so Forward * ToHit = cos(theta)
+	const double CosTheta = FVector::DotProduct(Forward, ToHit);
+	// Take the inverse cosine (arc-cosine) of cos(theta) to get theta
+	double Theta = FMath::Acos(CosTheta);
+	// convert from radians to degrees
+	Theta = FMath::RadiansToDegrees(Theta);
+
+	// if CrossProduct points down, Theta should be negative
+	const FVector CrossProduct = FVector::CrossProduct(Forward, ToHit);
+	if (CrossProduct.Z < 0)
+	{
+		Theta *= -1.f;
+	}
+
+	FName Section("FromBack");
+
+	if (Theta >= -45.f && Theta < 45.f)
+	{
+		Section = FName("FromFront");
+	}
+	else if (Theta >= -135.f && Theta < -45.f)
+	{
+		Section = FName("FromLeft");
+	}
+	else if (Theta >= 45.f && Theta < 135.f)
+	{
+		Section = FName("FromRight");
+	}
+
+	PlayHitReactMontage(Section);
+}
+
+void ABaseCharacter::PlayHitSound(const FVector& ImpactPoint)
+{
+	if (HitSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(
+			this,
+			HitSound,
+			ImpactPoint
+		);
+	}
+}
+
+void ABaseCharacter::SpawnHitParticles(const FVector& ImpactPoint)
+{
+	if (HitParticles && GetWorld())
+	{
+		UGameplayStatics::SpawnEmitterAtLocation(
+			GetWorld(),
+			HitParticles,
+			ImpactPoint
+		);
+	}
+}
+
+void ABaseCharacter::HandleDamage(float DamageAmount)
+{
+	if (Attributes)
+	{
+		Attributes->ReceiveDamage(DamageAmount);
+	}
+}
+
+void ABaseCharacter::PlayMontageSection(UAnimMontage* Montage, const FName& SectionName)
+{
+	UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
+	if (AnimInstance && Montage)
+	{
+		AnimInstance->Montage_Play(Montage);
+		AnimInstance->Montage_JumpToSection(SectionName, Montage);
+	}
+}
+
+int32 ABaseCharacter::PlayRandomMontageSection(UAnimMontage* Montage, const TArray<FName>& SectionNames)
+{
+	if (SectionNames.Num() <= 0) return -1;
+	const int32 MaxSectionIndex = SectionNames.Num() - 1;
+	const int32 Selection = FMath::RandRange(0, MaxSectionIndex);
+	PlayMontageSection(Montage, SectionNames[Selection]);
+	return Selection;
+}
+
+int32 ABaseCharacter::PlayAttackMontage()
+{
+	return PlayRandomMontageSection(AttackMontage, AttackMontageSections);
+}
+
+int32 ABaseCharacter::PlayDeathMontage()
+{
+	const int32 Selection = PlayRandomMontageSection(DeathMontage, DeathMontageSections);
+	TEnumAsByte<EDeathPose> Pose(Selection);
+	if (Pose < EDeathPose::EDP_MAX)
+	{
+		DeathPose = Pose;
+	}
+
+	return Selection;
+}
+
+void ABaseCharacter::PlayDodgeMontage()
+{
+	PlayMontageSection(DodgeMontage, FName("Default"));
+}
+
+void ABaseCharacter::StopAttackMontage()
+{
+	UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
+	if (AnimInstance)
+	{
+		AnimInstance->Montage_Stop(0.25f, AttackMontage);
+	}
+}
+
+FVector ABaseCharacter::GetTranslationWarpTarget()
+{
+	if(CombatTarget == nullptr)return FVector();
+
+	const FVector CombatTargetLocation = CombatTarget->GetActorLocation();
+	const FVector Location = GetActorLocation();
+	FVector TargetToMe = (Location - CombatTargetLocation).GetSafeNormal();
+	TargetToMe *= WarpTargetDistance;
+
+	return CombatTargetLocation + TargetToMe;
+}
+
+FVector ABaseCharacter::GetRotationWarpTarget()
+{
+	if (CombatTarget) 
+	{
+		return CombatTarget->GetActorLocation();
+	}
+
+	return FVector();
+}
+
+void ABaseCharacter::DisableCapsule()
+{
+	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+}
+
+bool ABaseCharacter::CanAttack()
+{
+	return false;
+}
+
+bool ABaseCharacter::IsAlive()
+{
+	return Attributes && Attributes->IsAlive();
+}
+
+void ABaseCharacter::DisableMeshCollision()
+{
+	GetMesh()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+}
+
+void ABaseCharacter::AttackEnd()
+{
+}
+
+void ABaseCharacter::DodgeEnd()
+{
+}
+
+void ABaseCharacter::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+}
+
+void ABaseCharacter::SetWeaponCollisionEnabled(ECollisionEnabled::Type CollisionEnabled)
+{
+	if (EquippedWeapon && EquippedWeapon->GetWeaponBox())
+	{
+		EquippedWeapon->GetWeaponBox()->SetCollisionEnabled(CollisionEnabled);
+		EquippedWeapon->IgnoreActors.Empty();
+	}
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Character\SlashAnimInstance.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Character/SlashAnimInstance.h"
+#include "Character/SlashCharacter.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "Kismet/KismetMathLibrary.h"
+
+void USlashAnimInstance::NativeInitializeAnimation()
+{
+	Super::NativeInitializeAnimation();
+
+	SlashCharacter = Cast<ASlashCharacter>(TryGetPawnOwner());
+
+	if (SlashCharacter)
+	{
+		SlashCharacterMovement = SlashCharacter->GetCharacterMovement();
+	}
+}
+
+void USlashAnimInstance::NativeUpdateAnimation(float DeltaTime)
+{
+	Super::NativeUpdateAnimation(DeltaTime);
+
+	if (SlashCharacterMovement)
+	{
+		GroundSpeed = UKismetMathLibrary::VSizeXY(SlashCharacterMovement->Velocity);
+		IsFalling = SlashCharacterMovement->IsFalling();
+		CharacterState = SlashCharacter->GetCharacterState();
+		ActionState = SlashCharacter->GetActionState();
+		DeathPose = SlashCharacter->GetDeathPose();
+	}
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Character\SlashCharacter.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Character/SlashCharacter.h"
+#include "GameFramework/SpringArmComponent.h"
+#include "Camera/CameraComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "GroomComponent.h"
+#include "Components/AttributeComponent.h"
+#include "Actors/Item.h"
+#include "Actors/Weapons/Weapon.h"
+#include "Animation/AnimMontage.h"
+#include "HUD/SlashHud.h"
+#include "HUD/SlashOverlay.h"
+#include "Actors/Soul.h"
+#include "Actors/Treasures/Treasure.h"
+
+ASlashCharacter::ASlashCharacter()
+{
+	PrimaryActorTick.bCanEverTick = true;
+
+	bUseControllerRotationPitch = false;
+	bUseControllerRotationYaw = false;
+	bUseControllerRotationRoll = false;
+
+	GetCharacterMovement()->bOrientRotationToMovement = true;
+	GetCharacterMovement()->RotationRate = FRotator(0.f, 400.f, 0.f);
+
+	GetMesh()->SetCollisionObjectType(ECollisionChannel::ECC_WorldDynamic);
+	GetMesh()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore);
+	GetMesh()->SetCollisionResponseToChannel(ECollisionChannel::ECC_Visibility, ECollisionResponse::ECR_Block);
+	GetMesh()->SetCollisionResponseToChannel(ECollisionChannel::ECC_WorldDynamic, ECollisionResponse::ECR_Overlap);
+	GetMesh()->SetGenerateOverlapEvents(true);
+
+	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
+	CameraBoom->SetupAttachment(GetRootComponent());
+	CameraBoom->TargetArmLength = 300.f;
+
+	ViewCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("ViewCamera"));
+	ViewCamera->SetupAttachment(CameraBoom);
+
+	Hair = CreateDefaultSubobject<UGroomComponent>(TEXT("Hair"));
+	Hair->SetupAttachment(GetMesh());
+	Hair->AttachmentName = FString("head");
+
+	Eyebrows = CreateDefaultSubobject<UGroomComponent>(TEXT("Eyebrows"));
+	Eyebrows->SetupAttachment(GetMesh());
+	Eyebrows->AttachmentName = FString("head");
+
+}
+
+void ASlashCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+{
+	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	PlayerInputComponent->BindAxis(FName("MoveForward"), this, &ASlashCharacter::MoveForward);
+	PlayerInputComponent->BindAxis(FName("MoveRight"), this, &ASlashCharacter::MoveRight);
+	PlayerInputComponent->BindAxis(FName("Turn"), this, &ASlashCharacter::Turn);
+	PlayerInputComponent->BindAxis(FName("LookUp"), this, &ASlashCharacter::LookUp);
+
+	PlayerInputComponent->BindAction(FName("Jump"), IE_Pressed, this, &ASlashCharacter::Jump);
+	PlayerInputComponent->BindAction(FName("Equip"), IE_Pressed, this, &ASlashCharacter::EKeyPressed);
+	PlayerInputComponent->BindAction(FName("Attack"), IE_Pressed, this, &ASlashCharacter::Attack);
+	PlayerInputComponent->BindAction(FName("Dodge"), IE_Pressed, this, &ASlashCharacter::Dodge);
+}
+
+void ASlashCharacter::Jump()
+{
+	if (IsUnoccupied())
+	{
+		Super::Jump();
+	}
+}
+
+float ASlashCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+{
+	HandleDamage(DamageAmount);
+	SetHUDHealth();
+	return DamageAmount;
+}
+
+void ASlashCharacter::GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter)
+{
+	Super::GetHit_Implementation(ImpactPoint, Hitter);
+	SetWeaponCollisionEnabled(ECollisionEnabled::NoCollision);
+	if (Attributes && Attributes->GetHealthPercent() > 0)
+	{
+		ActionState = EActionState::EAS_HitReaction;
+	}
+}
+
+void ASlashCharacter::SetOverlappingItem(AItem* Item)
+{
+	OverlappingItem = Item;
+}
+
+void ASlashCharacter::AddSouls(ASoul* Soul)
+{
+	if (Attributes && SlashOverlay)
+	{
+		Attributes->AddSouls(Soul->GetSouls());
+		SlashOverlay->SetSouls(Attributes->GetSouls());
+	}
+}
+
+void ASlashCharacter::AddGold(ATreasure* Treasure)
+{
+	if (Attributes && SlashOverlay)
+	{
+		Attributes->AddGold(Treasure->GetGold());
+		SlashOverlay->SetGold(Attributes->GetGold());
+	}
+}
+
+void ASlashCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+
+	Tags.Add(FName("EngageableTarget"));
+
+	InitializeSlashOverlay();
+}
+
+void ASlashCharacter::Tick(float DeltaTime)
+{
+	if (Attributes && SlashOverlay)
+	{
+		Attributes->RegenStamina(DeltaTime);
+		SlashOverlay->SetStaminaBarPercent(Attributes->GetStaminaPercent());
+	}
+}
+
+void ASlashCharacter::MoveForward(float Value)
+{
+	if (ActionState != EActionState::EAS_Unoccupied) return;
+	if (Controller && (Value != 0.f))
+	{
+		// find out which way is forward
+		const FRotator ControlRotation = GetControlRotation();
+		const FRotator YawRotation(0.f, ControlRotation.Yaw, 0.f);
+
+		const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+		AddMovementInput(Direction, Value);
+	}
+}
+
+void ASlashCharacter::MoveRight(float Value)
+{
+	if (ActionState != EActionState::EAS_Unoccupied) return;
+	if (Controller && (Value != 0.f))
+	{
+		// find out which way is right
+		const FRotator ControlRotation = GetControlRotation();
+		const FRotator YawRotation(0.f, ControlRotation.Yaw, 0.f);
+
+		const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+		AddMovementInput(Direction, Value);
+	}
+}
+
+void ASlashCharacter::Turn(float Value)
+{
+	AddControllerYawInput(Value);
+}
+
+void ASlashCharacter::LookUp(float Value)
+{
+	AddControllerPitchInput(Value);
+}
+
+void ASlashCharacter::EKeyPressed()
+{
+	AWeapon* OverlappingWeapon = Cast<AWeapon>(OverlappingItem);
+	if (OverlappingWeapon)
+	{
+		EquipWeapon(OverlappingWeapon);
+	}
+	else
+	{
+		if (CanDisarm())
+		{
+			Disarm();
+		}
+		else if (CanArm())
+		{
+			Arm();
+		}
+	}
+}
+
+void ASlashCharacter::Attack()
+{
+	Super::Attack();
+	if (CanAttack())
+	{
+		PlayAttackMontage();
+		ActionState = EActionState::EAS_Attacking;
+	}
+}
+
+void ASlashCharacter::Dodge()
+{
+	if (IsOccupied() || !HasEnoughStamina()) return;
+	PlayDodgeMontage();
+	ActionState = EActionState::EAS_Dodge;
+	if (Attributes && SlashOverlay)
+	{
+		Attributes->UseStamina(Attributes->GetDodgeCost());
+		SlashOverlay->SetStaminaBarPercent(Attributes->GetStaminaPercent());
+	}
+}
+
+void ASlashCharacter::EquipWeapon(AWeapon* Weapon)
+{
+	Weapon->Equip(GetMesh(), FName("RightHandSocket"), this, this);
+	CharacterState = ECharacterState::ECS_EquippedOneHandedWeapon;
+	OverlappingItem = nullptr;
+	EquippedWeapon = Weapon;
+}
+
+void ASlashCharacter::AttackEnd()
+{
+	ActionState = EActionState::EAS_Unoccupied;
+}
+
+void ASlashCharacter::DodgeEnd()
+{
+	Super::DodgeEnd();
+	ActionState = EActionState::EAS_Unoccupied;
+}
+
+bool ASlashCharacter::CanAttack()
+{
+	return ActionState == EActionState::EAS_Unoccupied &&
+		CharacterState != ECharacterState::ECS_Unequipped;
+}
+
+bool ASlashCharacter::CanDisarm()
+{
+	return ActionState == EActionState::EAS_Unoccupied &&
+		CharacterState != ECharacterState::ECS_Unequipped;
+}
+
+bool ASlashCharacter::CanArm()
+{
+	return ActionState == EActionState::EAS_Unoccupied &&
+		CharacterState == ECharacterState::ECS_Unequipped &&
+		EquippedWeapon;
+}
+
+void ASlashCharacter::Disarm()
+{
+	PlayEquipMontage(FName("Unequip"));
+	CharacterState = ECharacterState::ECS_Unequipped;
+	ActionState = EActionState::EAS_EquippingWeapon;
+}
+
+void ASlashCharacter::Arm()
+{
+	PlayEquipMontage(FName("Equip"));
+	CharacterState = ECharacterState::ECS_EquippedOneHandedWeapon;
+	ActionState = EActionState::EAS_EquippingWeapon;
+}
+
+void ASlashCharacter::AttachWeaponToBack()
+{
+	if (EquippedWeapon)
+	{
+		EquippedWeapon->AttachMeshToSocket(GetMesh(), FName("SpineSocket"));
+	}
+}
+
+void ASlashCharacter::AttachWeaponToHand()
+{
+	if (EquippedWeapon)
+	{
+		EquippedWeapon->AttachMeshToSocket(GetMesh(), FName("RightHandSocket"));
+	}
+}
+
+void ASlashCharacter::PlayEquipMontage(const FName& SectionName)
+{
+	UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
+	if (AnimInstance && EquipMontage)
+	{
+		AnimInstance->Montage_Play(EquipMontage);
+		AnimInstance->Montage_JumpToSection(SectionName, EquipMontage);
+	}
+}
+
+void ASlashCharacter::Die()
+{
+	Super::Die();
+	ActionState = EActionState::EAS_Dead;
+	DisableMeshCollision();
+}
+
+bool ASlashCharacter::HasEnoughStamina()
+{
+	return Attributes && Attributes->GetStamina() > Attributes->GetDodgeCost();
+}
+
+bool ASlashCharacter::IsOccupied()
+{
+	return ActionState != EActionState::EAS_Unoccupied;
+}
+
+void ASlashCharacter::FinishEquipping()
+{
+	ActionState = EActionState::EAS_Unoccupied;
+}
+
+void ASlashCharacter::HitReactEnd()
+{
+	ActionState = EActionState::EAS_Unoccupied;
+}
+
+bool ASlashCharacter::IsUnoccupied()
+{
+	return ActionState == EActionState::EAS_Unoccupied;
+}
+
+void ASlashCharacter::InitializeSlashOverlay()
+{
+	APlayerController* PlayerController = Cast<APlayerController>(GetController());
+	if (PlayerController)
+	{
+		ASlashHud* SlashHud = Cast<ASlashHud>(PlayerController->GetHUD());
+		if (SlashHud)
+		{
+			SlashOverlay = SlashHud->GetSlashOverlay();
+			if (SlashOverlay && Attributes)
+			{
+				SlashOverlay->SetHealthBarPercent(Attributes->GetHealthPercent());
+				SlashOverlay->SetStaminaBarPercent(1.f);
+				SlashOverlay->SetGold(0);
+				SlashOverlay->SetSouls(0);
+			}
+		}
+	}
+}
+
+void ASlashCharacter::SetHUDHealth()
+{
+	if (SlashOverlay && Attributes)
+	{
+		SlashOverlay->SetHealthBarPercent(Attributes->GetHealthPercent());
+	}
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Components\AttributeComponent.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Components/AttributeComponent.h"
+
+UAttributeComponent::UAttributeComponent()
+{
+	PrimaryComponentTick.bCanEverTick = false;
+
+}
+
+
+void UAttributeComponent::BeginPlay()
+{
+	Super::BeginPlay();
+
+	
+}
+
+
+void UAttributeComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+}
+
+void UAttributeComponent::RegenStamina(float DeltaTime)
+{
+	Stamina = FMath::Clamp(Stamina + StaminaRengeRate * DeltaTime, 0.f, MaxStamina);
+}
+
+void UAttributeComponent::ReceiveDamage(float Damage)
+{
+	Health = FMath::Clamp(Health - Damage, 0.f, MaxHealth);
+}
+
+void UAttributeComponent::UseStamina(float StaminaCost)
+{
+	Stamina = FMath::Clamp(Stamina - StaminaCost, 0.f, MaxStamina);
+}
+
+float UAttributeComponent::GetHealthPercent()
+{
+	return Health / MaxHealth;
+}
+
+float UAttributeComponent::GetStaminaPercent()
+{
+	return Stamina / MaxStamina;
+}
+
+bool UAttributeComponent::IsAlive()
+{
+	return Health > 0.f;
+}
+
+void UAttributeComponent::AddSouls(int32 AmountOfSouls)
+{
+	Souls += AmountOfSouls;
+}
+
+void UAttributeComponent::AddGold(int32 AmountOfGold)
+{
+	Gold += AmountOfGold;
+}
+
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Enemy\Enemy.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Enemy/Enemy.h"
+#include "AIController.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "Perception/PawnSensingComponent.h"
+#include "Components/AttributeComponent.h"
+#include "HUD/HealthBarComponent.h"
+#include "Navigation/PathFollowingComponent.h"
+#include "Actors/Weapons/Weapon.h"
+#include "Actors/Soul.h"
+
+AEnemy::AEnemy()
+{
+	PrimaryActorTick.bCanEverTick = true;
+
+	GetMesh()->SetCollisionObjectType(ECollisionChannel::ECC_WorldDynamic);
+	GetMesh()->SetCollisionResponseToChannel(ECollisionChannel::ECC_Visibility, ECollisionResponse::ECR_Block);
+	GetMesh()->SetCollisionResponseToChannel(ECollisionChannel::ECC_Camera, ECollisionResponse::ECR_Ignore);
+	GetMesh()->SetGenerateOverlapEvents(true);
+
+
+	HealthBarWidget = CreateDefaultSubobject<UHealthBarComponent>(TEXT("HealthBar"));
+	HealthBarWidget->SetupAttachment(GetRootComponent());
+
+	GetCharacterMovement()->bOrientRotationToMovement = true;
+	bUseControllerRotationPitch = false;
+	bUseControllerRotationYaw = false;
+	bUseControllerRotationRoll = false;
+
+	PawnSensing = CreateDefaultSubobject<UPawnSensingComponent>(TEXT("PawnSensing"));
+	PawnSensing->SightRadius = 4000.f;
+	PawnSensing->SetPeripheralVisionAngle(45.f);
+}
+
+void AEnemy::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+	if (IsDead()) return;
+	if (EnemyState > EEnemyState::EES_Patrolling)
+	{
+		CheckCombatTarget();
+	}
+	else
+	{
+		CheckPatrolTarget();
+	}
+}
+
+float AEnemy::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+{
+	HandleDamage(DamageAmount);
+	CombatTarget = EventInstigator->GetPawn();
+	if (IsInsideAttackRadius())
+	{
+		EnemyState = EEnemyState::EES_Attacking;
+	}
+	else if(IsOutsideAttackRadius())
+	{
+		ChaseTarget();
+	}
+
+	return DamageAmount;
+}
+
+void AEnemy::Destroyed()
+{
+	if (EquippedWeapon)
+	{
+		EquippedWeapon->Destroy();
+	}
+}
+
+void AEnemy::GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter)
+{
+	Super::GetHit_Implementation(ImpactPoint, Hitter);
+	if(!IsDead()) ShowHealthBar();
+	ClearPatrolTimer();
+	ClearAttackTimer();
+	SetWeaponCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	StopAttackMontage();
+}
+
+void AEnemy::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (PawnSensing) PawnSensing->OnSeePawn.AddDynamic(this, &AEnemy::PawnSeen);
+	InitializeEnemy();
+	Tags.Add(FName("Enemy"));
+}
+
+void AEnemy::Die()
+{
+	Super::Die();
+	EnemyState = EEnemyState::EES_Dead;
+	ClearAttackTimer();
+	HideHealthBar();
+	DisableCapsule();
+	SetLifeSpan(DeathLifeSpan);
+	GetCharacterMovement()->bOrientRotationToMovement = false;
+	SetWeaponCollisionEnabled(ECollisionEnabled::NoCollision);
+	SpawnSoul();
+}
+
+void AEnemy::SpawnSoul()
+{
+	UWorld* World = GetWorld();
+	if (World && SoulClass && Attributes)
+	{
+		ASoul* SpawnedSoul = World->SpawnActor<ASoul>(SoulClass, GetActorLocation(), GetActorRotation());
+		if (SpawnedSoul)
+		{
+			SpawnedSoul->SetSouls(Attributes->GetSouls());
+		}
+	}
+}
+
+void AEnemy::Attack()
+{
+	Super::Attack();
+	if (CombatTarget == nullptr) return;
+	EnemyState = EEnemyState::EES_Engaged;
+	PlayAttackMontage();
+}
+
+bool AEnemy::CanAttack()
+{
+	bool bCanAttack =
+		IsInsideAttackRadius() &&
+		!IsAttacking() &&
+		!IsEngaged() &&
+		!IsDead();
+	return bCanAttack;
+}
+
+void AEnemy::AttackEnd()
+{
+	EnemyState = EEnemyState::EES_NoState;
+	CheckCombatTarget();
+}
+
+void AEnemy::HandleDamage(float DamageAmount)
+{
+	Super::HandleDamage(DamageAmount);
+
+	if (Attributes && HealthBarWidget)
+	{
+		HealthBarWidget->SetHealthPercent(Attributes->GetHealthPercent());
+	}
+}
+
+void AEnemy::InitializeEnemy()
+{
+	EnemyController = Cast<AAIController>(GetController());
+	MoveToTarget(PatrolTarget);
+	HideHealthBar();
+	SpawnDefaultWeapon();
+}
+
+void AEnemy::CheckPatrolTarget()
+{
+	if (InTargetRange(PatrolTarget, PatrolRadius))
+	{
+		PatrolTarget = ChoosePatrolTarget();
+		const float WaitTime = FMath::RandRange(PatrolWaitMin, PatrolWaitMax);
+		GetWorldTimerManager().SetTimer(PatrolTimer, this, &AEnemy::PatrolTimerFinished, WaitTime);
+	}
+}
+
+void AEnemy::CheckCombatTarget()
+{
+	if (IsOutsideCombatRadius())
+	{
+		ClearAttackTimer();
+		LoseInterest();
+		if (!IsEngaged()) StartPatrolling();
+	}
+	else if (IsOutsideAttackRadius() && !IsChasing())
+	{
+		ClearAttackTimer();
+		if (!IsEngaged()) ChaseTarget();
+	}
+	else if (CanAttack())
+	{
+		StartAttackTimer();
+	}
+}
+
+void AEnemy::PatrolTimerFinished()
+{
+	MoveToTarget(PatrolTarget);
+}
+
+void AEnemy::HideHealthBar()
+{
+	if (HealthBarWidget)
+	{
+		HealthBarWidget->SetVisibility(false);
+	}
+}
+
+void AEnemy::ShowHealthBar()
+{
+	if (HealthBarWidget)
+	{
+		HealthBarWidget->SetVisibility(true);
+	}
+}
+
+void AEnemy::LoseInterest()
+{
+	CombatTarget = nullptr;
+	HideHealthBar();
+}
+
+void AEnemy::StartPatrolling()
+{
+	EnemyState = EEnemyState::EES_Patrolling;
+	GetCharacterMovement()->MaxWalkSpeed = PatrollingSpeed;
+	MoveToTarget(PatrolTarget);
+}
+
+void AEnemy::ChaseTarget()
+{
+	EnemyState = EEnemyState::EES_Chasing;
+	GetCharacterMovement()->MaxWalkSpeed = ChasingSpeed;
+	MoveToTarget(CombatTarget);
+}
+
+bool AEnemy::IsOutsideCombatRadius()
+{
+	return !InTargetRange(CombatTarget, CombatRadius);
+}
+
+bool AEnemy::IsOutsideAttackRadius()
+{
+	return !InTargetRange(CombatTarget, AttackRadius);
+}
+
+bool AEnemy::IsInsideAttackRadius()
+{
+	return InTargetRange(CombatTarget, AttackRadius);
+}
+
+bool AEnemy::IsChasing()
+{
+	return EnemyState == EEnemyState::EES_Chasing;
+}
+
+bool AEnemy::IsAttacking()
+{
+	return EnemyState == EEnemyState::EES_Attacking;
+}
+
+bool AEnemy::IsDead()
+{
+	return EnemyState == EEnemyState::EES_Dead;
+}
+
+bool AEnemy::IsEngaged()
+{
+	return EnemyState == EEnemyState::EES_Engaged;
+}
+
+void AEnemy::ClearPatrolTimer()
+{
+	GetWorldTimerManager().ClearTimer(PatrolTimer);
+}
+
+void AEnemy::StartAttackTimer()
+{
+	EnemyState = EEnemyState::EES_Attacking;
+	const float AttackTime = FMath::RandRange(AttackMin, AttackMax);
+	GetWorldTimerManager().SetTimer(AttackTimer, this, &AEnemy::Attack, AttackTime);
+}
+
+void AEnemy::ClearAttackTimer()
+{
+	GetWorldTimerManager().ClearTimer(AttackTimer);
+}
+
+bool AEnemy::InTargetRange(AActor* Target, double Radius)
+{
+	if (Target == nullptr) return false;
+	const double DistanceToTarget = (Target->GetActorLocation() - GetActorLocation()).Size();
+	return DistanceToTarget <= Radius;
+}
+
+void AEnemy::MoveToTarget(AActor* Target)
+{
+	if (EnemyController == nullptr || Target == nullptr) return;
+	FAIMoveRequest MoveRequest;
+	MoveRequest.SetGoalActor(Target);
+	MoveRequest.SetAcceptanceRadius(50.f);
+	EnemyController->MoveTo(MoveRequest);
+}
+
+AActor* AEnemy::ChoosePatrolTarget()
+{
+	TArray<AActor*> ValidTargets;
+	for (AActor* Target : PatrolTargets)
+	{
+		if (Target != PatrolTarget)
+		{
+			ValidTargets.AddUnique(Target);
+		}
+	}
+
+	const int32 NumPatrolTargets = ValidTargets.Num();
+	if (NumPatrolTargets > 0)
+	{
+		const int32 TargetSelection = FMath::RandRange(0, NumPatrolTargets - 1);
+		return ValidTargets[TargetSelection];
+	}
+	return nullptr;
+}
+
+void AEnemy::SpawnDefaultWeapon()
+{
+	UWorld* World = GetWorld();
+	if (World && WeaponClass)
+	{
+		AWeapon* DefaultWeapon = World->SpawnActor<AWeapon>(WeaponClass);
+		DefaultWeapon->Equip(GetMesh(), FName("RightHandSocket"), this, this);
+		EquippedWeapon = DefaultWeapon;
+	}
+}
+
+void AEnemy::PawnSeen(APawn* SeenPawn)
+{
+	const bool bShouldChaseTarget =
+		EnemyState != EEnemyState::EES_Dead &&
+		EnemyState != EEnemyState::EES_Chasing &&
+		EnemyState < EEnemyState::EES_Attacking &&
+		SeenPawn->ActorHasTag(FName("EngageableTarget"));
+
+	if (bShouldChaseTarget)
+	{
+		CombatTarget = SeenPawn;
+		ClearPatrolTimer();
+		ChaseTarget();
+	}
+}
+
+
+
+
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\HUD\HealthBar.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "HUD/HealthBar.h"
+
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\HUD\HealthBarComponent.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "HUD/HealthBarComponent.h"
+#include "HUD/HealthBar.h"
+#include "Components/ProgressBar.h"
+
+void UHealthBarComponent::SetHealthPercent(float Percent)
+{
+	if (HealthBarWidget == nullptr)
+	{
+		HealthBarWidget = Cast<UHealthBar>(GetUserWidgetObject());
+	}
+
+	if (HealthBarWidget && HealthBarWidget->HealthBar)
+	{
+		HealthBarWidget->HealthBar->SetPercent(Percent);
+	}
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\HUD\SlashHud.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "HUD/SlashHud.h"
+#include "HUD/SlashOverlay.h"
+
+void ASlashHud::BeginPlay()
+{
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		APlayerController* Controller = World->GetFirstPlayerController();
+		if (Controller && SlashOverlayClass)
+		{
+			SlashOverlay = CreateWidget<USlashOverlay>(Controller, SlashOverlayClass);
+			SlashOverlay->AddToViewport();
+		}
+	}
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\HUD\SlashOverlay.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "HUD/SlashOverlay.h"
+#include "Components/ProgressBar.h"
+#include "Components/TextBlock.h"
+
+void USlashOverlay::SetHealthBarPercent(float Percent)
+{
+	if (HealthProgressBar)
+	{
+		HealthProgressBar->SetPercent(Percent);
+	}
+}
+
+void USlashOverlay::SetStaminaBarPercent(float Percent)
+{
+	if (StaminaProgressBar)
+	{
+		StaminaProgressBar->SetPercent(Percent);
+	}
+}
+
+void USlashOverlay::SetGold(int32 Gold)
+{
+	if (GoldText)
+	{
+		const FString String = FString::Printf(TEXT("%d"), Gold);
+		const FText Text = FText::FromString(String);
+		GoldText->SetText(Text);
+	}
+}
+
+void USlashOverlay::SetSouls(int32 Souls)
+{
+	if (SoulsText)
+	{
+		const FString String = FString::Printf(TEXT("%d"), Souls);
+		const FText Text = FText::FromString(String);
+		SoulsText->SetText(Text);
+	}
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Interface\HitInterface.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Interface/HitInterface.h"
+
+// Add default functionality here for any IHitInterface functions that are not pure virtual.
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Interface\PickupInterface.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+
+#include "Interface/PickupInterface.h"
+
+// Add default functionality here for any IPickupInterface functions that are not pure virtual.
+
+void IPickupInterface::SetOverlappingItem(AItem* Item)
+{
+}
+
+void IPickupInterface::AddSouls(ASoul* Soul)
+{
+}
+
+void IPickupInterface::AddGold(ATreasure* Gold)
+{
+}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Private\Pawns\Bird.cpp
+#include "Pawns/Bird.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "GameFramework/SpringArmComponent.h"
+#include "Camera/CameraComponent.h"
+
+
+ABird::ABird()
+{
+	PrimaryActorTick.bCanEverTick = true;
+
+	Capsule = CreateDefaultSubobject<UCapsuleComponent>(TEXT("Capsule"));
+	Capsule->SetCapsuleHalfHeight(20.f);
+	Capsule->SetCapsuleRadius(15.f);
+	SetRootComponent(Capsule);
+
+	BirdMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("BirdMesh"));
+	BirdMesh->SetupAttachment(GetRootComponent());
+
+	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
+	CameraBoom->SetupAttachment(GetRootComponent());
+	CameraBoom->TargetArmLength = 300.f;
+
+	ViewCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("ViewCamera"));
+	ViewCamera->SetupAttachment(CameraBoom);
+
+	AutoPossessPlayer = EAutoReceiveInput::Player0;
+}
+
+void ABird::BeginPlay()
+{
+	Super::BeginPlay();
+	
+}
+void ABird::MoveForward(float Value)
+{
+	if (Controller && (Value != 0.f)) 
+	{
+		FVector Forward = GetActorForwardVector();
+		AddMovementInput(Forward, Value);
+	}
+}
+
+void ABird::Turn(float Value)
+{
+	AddControllerYawInput(Value);
+}
+
+void ABird::LookUp(float Value)
+{
+	AddControllerPitchInput(Value);
+}
+
+void ABird::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+}
+
+void ABird::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+{
+	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	PlayerInputComponent->BindAxis(FName("Moveforward"), this, &ABird::MoveForward);
+	PlayerInputComponent->BindAxis(FName("Turn"), this, &ABird::Turn);
+	PlayerInputComponent->BindAxis(FName("Lookup"), this, &ABird::LookUp);
+}
+
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Actors\Treasures\Treasure.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Actors/Item.h"
+#include "Treasure.generated.h"
+
+/**
+ * 
+ */
+UCLASS()
+class SLASH_API ATreasure : public AItem
+{
+	GENERATED_BODY()
+	
+protected:
+	virtual void OnSphereOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult) override;
+
+private:
+	UPROPERTY(EditAnywhere, Category = "Treasure Properties")
+	int32 Gold;
+
+public:
+	FORCEINLINE int32 GetGold() const { return Gold; }
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Actors\Weapons\Weapon.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Actors/Item.h"
+#include "Weapon.generated.h"
+
+class USoundBase;
+class UBoxComponent;
+
+/**
+*
+*/
+UCLASS()
+class SLASH_API AWeapon : public AItem
+{
+	GENERATED_BODY()
+public:
+	AWeapon();
+	void Equip(USceneComponent* InParent, FName InSocketName, AActor* NewOwner, APawn* NewInstigator);
+	void DeactivateEmbers();
+	void DisableSphereCollision();
+	void PlayEquipSound();
+	void AttachMeshToSocket(USceneComponent* InParent, const FName& InSocketName);
+
+	TArray<AActor*> IgnoreActors;
+protected:
+	virtual void BeginPlay() override;
+
+	UFUNCTION()
+	void OnBoxOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
+
+	bool ActorIsSameType(AActor* OtherActor);
+
+	void ExecuteGetHit(FHitResult& BoxHit);
+
+	UFUNCTION(BlueprintImplementableEvent)
+	void CreateFields(const FVector& FieldLocation);
+private:
+
+	void BoxTrace(FHitResult& BoxHit);
+
+	UPROPERTY(EditAnywhere, Category = "Weapon Properties")
+	FVector BoxTraceExtent = FVector(5.f);
+
+	UPROPERTY(EditAnywhere, Category = "Weapon Properties")
+	bool bShowBoxDebug = false;
+
+	UPROPERTY(EditAnywhere, Category = "Weapon Properties")
+	USoundBase* EquipSound;
+
+	UPROPERTY(VisibleAnywhere, Category = "Weapon Properties")
+	UBoxComponent* WeaponBox;
+
+	UPROPERTY(VisibleAnywhere)
+	USceneComponent* BoxTraceStart;
+
+	UPROPERTY(VisibleAnywhere)
+	USceneComponent* BoxTraceEnd;
+
+	UPROPERTY(EditAnywhere, Category = "Weapon Properties")
+	float Damage = 20.f;
+
+public:
+	FORCEINLINE UBoxComponent* GetWeaponBox() const { return WeaponBox; }
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Actors\Item.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "Item.generated.h"
+
+class USphereComponent;
+class UNiagaraComponent;
+class UNiagaraSystem;
+
+enum class EItemState : uint8
+{
+	EIS_Hovering,
+	EIS_Equipped
+};
+
+UCLASS()
+class SLASH_API AItem : public AActor
+{
+	GENERATED_BODY()
+	
+public:	
+	AItem();
+	virtual void Tick(float DeltaTime) override;
+
+protected:
+	virtual void BeginPlay() override;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sine Parameters")
+	float Amplitude = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sine Parameters")
+	float TimeConstant = 5.f;
+
+	UFUNCTION(BlueprintPure)
+	float TransformedSin();
+
+	UFUNCTION(BlueprintPure)
+	float TransformedCos();
+
+	UFUNCTION()
+	virtual void OnSphereOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
+
+	UFUNCTION()
+	virtual void OnSphereEndOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex);
+	
+	virtual void SpawnPickupSystem();
+	virtual void SpawnPickupSound();
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
+	UStaticMeshComponent* ItemMesh;
+
+	EItemState ItemState = EItemState::EIS_Hovering;
+
+	UPROPERTY(VisibleAnywhere)
+	USphereComponent* Sphere;
+
+	UPROPERTY(EditAnywhere)
+	UNiagaraComponent* ItemEffect;
+
+	UPROPERTY(EditAnywhere)
+	USoundBase* PickupSound;
+
+private:
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "ture"))
+	float RunningTime;
+
+	UPROPERTY(EditAnywhere)
+	UNiagaraSystem* PickupEffect;
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Actors\Soul.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Actors/Item.h"
+#include "Soul.generated.h"
+
+/**
+ * 
+ */
+UCLASS()
+class SLASH_API ASoul : public AItem
+{
+	GENERATED_BODY()
+	
+protected:
+	virtual void OnSphereOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult) override;
+
+private:
+	UPROPERTY(EditAnywhere, Category = "Soul Properties")
+	int32 Souls;
+
+public:
+	FORCEINLINE int32 GetSouls() const { return Souls; }
+	FORCEINLINE void SetSouls(int32 NumberOfSouls) { Souls = NumberOfSouls; }
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Breakable\BreakableActor.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "Interface/HitInterface.h"
+#include "BreakableActor.generated.h"
+
+class UGeometryCollectionComponent;
+
+UCLASS()
+class SLASH_API ABreakableActor : public AActor, public IHitInterface
+{
+	GENERATED_BODY()
+	
+public:	
+	ABreakableActor();
+	virtual void Tick(float DeltaTime) override;
+
+	virtual void GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter) override;
+
+protected:
+	virtual void BeginPlay() override;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite)
+	UGeometryCollectionComponent* GeometryCollection;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite)
+	class UCapsuleComponent* Capsule;
+
+private:
+	UPROPERTY(EditAnywhere, Category = "Breakable Properties")
+	TArray<TSubclassOf<class ATreasure>> TreasureClasses;
+
+	bool bBroken;
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Character\BaseCharacter.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Character.h"
+#include "Interface/HitInterface.h"
+#include "CharacterType.h"
+#include "BaseCharacter.generated.h"
+
+class AWeapon;
+class UAttributeComponent;
+class UAnimMontage;
+
+UCLASS()
+class SLASH_API ABaseCharacter : public ACharacter, public IHitInterface
+{
+	GENERATED_BODY()
+
+public:
+	ABaseCharacter();
+	virtual void Tick(float DeltaTime) override;
+
+protected:
+	virtual void BeginPlay() override;
+	virtual void GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter) override;
+	virtual void Attack();
+	virtual void Die();
+	void DirectionalHitReact(const FVector& ImpactPoint);
+	virtual void HandleDamage(float DamageAmount);
+	void PlayHitSound(const FVector& ImpactPoint);
+	void SpawnHitParticles(const FVector& ImpactPoint);
+	void DisableCapsule();
+	virtual bool CanAttack();
+	bool IsAlive();
+	void DisableMeshCollision();
+	void PlayHitReactMontage(const FName& SectionName);
+	virtual int32 PlayAttackMontage();
+	virtual int32 PlayDeathMontage();
+	virtual void PlayDodgeMontage();
+	void StopAttackMontage();
+
+	UFUNCTION(BlueprintCallable)
+	FVector GetTranslationWarpTarget();
+
+	UFUNCTION(BlueprintCallable)
+	FVector GetRotationWarpTarget();
+
+	UFUNCTION(BlueprintCallable)
+	virtual void AttackEnd();
+
+	UFUNCTION(BlueprintCallable)
+	virtual void DodgeEnd();
+
+	UFUNCTION(BlueprintCallable)
+	void SetWeaponCollisionEnabled(ECollisionEnabled::Type CollisionEnabled);
+
+	UPROPERTY(VisibleAnywhere, Category = Weapon)
+	AWeapon* EquippedWeapon;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
+	UAttributeComponent* Attributes;
+
+	UPROPERTY(BlueprintReadOnly, Category = Combat)
+	AActor* CombatTarget;
+
+	UPROPERTY(BlueprintReadOnly, Category = Combat)
+	double WarpTargetDistance = 75.f;
+
+	UPROPERTY(BlueprintReadOnly)
+	TEnumAsByte<EDeathPose> DeathPose;
+
+private:
+	void PlayMontageSection(UAnimMontage* Montage, const FName& SectionName);
+	int32 PlayRandomMontageSection(UAnimMontage* Montage, const TArray<FName>& SectionNames);
+
+	UPROPERTY(EditAnywhere, Category = Combat)
+	USoundBase* HitSound;
+
+	UPROPERTY(EditAnywhere, Category = Combat)
+	UParticleSystem* HitParticles;
+
+	UPROPERTY(EditDefaultsOnly, Category = Combat)
+	UAnimMontage* AttackMontage;
+
+	UPROPERTY(EditDefaultsOnly, Category = Combat)
+	UAnimMontage* HitReactMontage;
+
+	UPROPERTY(EditDefaultsOnly, Category = Combat)
+	UAnimMontage* DeathMontage;
+
+	UPROPERTY(EditDefaultsOnly, Category = Combat)
+	UAnimMontage* DodgeMontage;
+
+	UPROPERTY(EditAnywhere, Category = Combat)
+	TArray<FName> AttackMontageSections;
+
+	UPROPERTY(EditAnywhere, Category = Combat)
+	TArray<FName> DeathMontageSections;
+public:
+	FORCEINLINE TEnumAsByte<EDeathPose> GetDeathPose() { return DeathPose; }
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Character\CharacterType.h
+#pragma once
+
+UENUM(BlueprintType)
+enum class ECharacterState : uint8
+{
+	ECS_Unequipped UMETA(DisplayName = "Unequipped"),
+	ECS_EquippedOneHandedWeapon UMETA(DisplayName = "Equipped One-Handed Weapon"),
+	ECS_EquippedTwoHandedWeapon UMETA(DisplayName = "Equipped Two-Handed Weapon")
+};
+
+UENUM(BlueprintType)
+enum class EActionState : uint8
+{
+	EAS_Unoccupied UMETA(DisplayName = "Unoccupied"),
+	EAS_HitReaction UMETA(DisplayName = "HitReaction"),
+	EAS_Attacking UMETA(DisplayName = "Attacking"),
+	EAS_EquippingWeapon UMETA(DisplayName = "Equipping Weapon"),
+	EAS_Dodge UMETA(DisplayName = "Dodge"),
+	EAS_Dead UMETA(DisplayName = "Dead")
+};
+
+UENUM(BlueprintType)
+enum EDeathPose
+{
+	EDP_Death1 UMETA(DisplayName = "Death1"),
+	EDP_Death2 UMETA(DisplayName = "Death2"),
+	EDP_Death3 UMETA(DisplayName = "Death3"),
+	EDP_Death4 UMETA(DisplayName = "Death4"),
+	EDP_Death5 UMETA(DisplayName = "Death5"),
+	EDP_Death6 UMETA(DisplayName = "Death6"),
+
+	EDP_MAX UMETA(DisplayName = "DefaultMAX")
+};
+
+UENUM(BlueprintType)
+enum class EEnemyState : uint8
+{
+	EES_NoState UMETA(DisplayName = "NoState"),
+	EES_Dead UMETA(DisplayName = "Dead"),
+	EES_Patrolling UMETA(DisplayName = "Patrolling"),
+	EES_Chasing UMETA(DisplayName = "Chasing"),
+	EES_Attacking UMETA(DisplayName = "Attacking"),
+	EES_Engaged UMETA(DisplayName = "Engaged")
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Character\SlashAnimInstance.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Animation/AnimInstance.h"
+#include "CharacterType.h"
+#include "SlashAnimInstance.generated.h"
+
+/**
+ * 
+ */
+UCLASS()
+class SLASH_API USlashAnimInstance : public UAnimInstance
+{
+	GENERATED_BODY()
+	
+public:
+	virtual void NativeInitializeAnimation() override;
+	virtual void NativeUpdateAnimation(float DeltaTime) override;
+	
+	UPROPERTY(BlueprintReadOnly)
+	class ASlashCharacter* SlashCharacter;
+
+	UPROPERTY(BlueprintReadOnly, Category = Movement)
+	class UCharacterMovementComponent* SlashCharacterMovement;
+
+	UPROPERTY(BlueprintReadOnly, Category = Movement)
+	float GroundSpeed;
+
+	UPROPERTY(BlueprintReadOnly, Category = Movement)
+	bool IsFalling;
+
+	UPROPERTY(BlueprintReadOnly, Category = Movement)
+	ECharacterState CharacterState;
+
+	UPROPERTY(BlueprintReadOnly, Category = Movement)
+	EActionState ActionState;
+
+	UPROPERTY(BlueprintReadOnly, Category = Movement)
+	TEnumAsByte<EDeathPose> DeathPose;
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Character\SlashCharacter.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "BaseCharacter.h"
+#include "CharacterType.h"
+#include "Interface/PickupInterface.h"
+#include "SlashCharacter.generated.h"
+
+class USpringArmComponent;
+class UCameraComponent;
+class UGroomComponent;
+class AItem;
+class UAnimMontage;
+class USlashOverlay;
+
+UCLASS()
+class SLASH_API ASlashCharacter : public ABaseCharacter, public IPickupInterface
+{
+	GENERATED_BODY()
+
+public:
+	ASlashCharacter();
+	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+	virtual void Jump() override;
+	virtual float TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator, AActor* DamageCauser) override;
+	virtual void GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter) override;
+	virtual void SetOverlappingItem(class AItem* Item) override;
+	virtual void AddSouls(class ASoul* Soul) override;
+	virtual void AddGold(class ATreasure* Treasure) override;
+protected:
+	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaTime) override;
+
+	/** Callbacks for input	*/
+	void MoveForward(float Value);
+	void MoveRight(float Value);
+	void Turn(float Value);
+	void LookUp(float Value);
+	void EKeyPressed();
+	virtual void Attack() override;
+	void Dodge();
+
+	/** Combat */
+	void EquipWeapon(AWeapon* Weapon);
+	virtual void AttackEnd() override;
+	virtual void DodgeEnd() override;
+	virtual bool CanAttack() override;
+	bool CanDisarm();
+	bool CanArm();
+	void Disarm();
+	void Arm();
+	void PlayEquipMontage(const FName& SectionName);
+	virtual void Die() override;
+	bool HasEnoughStamina();
+	bool IsOccupied();
+
+	UFUNCTION(BlueprintCallable)
+	void AttachWeaponToBack();
+
+	UFUNCTION(BlueprintCallable)
+	void AttachWeaponToHand();
+
+	UFUNCTION(BlueprintCallable)
+	void FinishEquipping();
+
+	UFUNCTION(BlueprintCallable)
+	void HitReactEnd();
+
+private:
+	bool IsUnoccupied();
+	void InitializeSlashOverlay();
+	void SetHUDHealth();
+
+	/** Character components */
+
+	UPROPERTY(VisibleAnywhere)
+	USpringArmComponent* CameraBoom;
+
+	UPROPERTY(VisibleAnywhere)
+	UCameraComponent* ViewCamera;
+
+	UPROPERTY(VisibleAnywhere, Category = Hair)
+	UGroomComponent* Hair;
+
+	UPROPERTY(VisibleAnywhere, Category = Hair)
+	UGroomComponent* Eyebrows;
+
+	UPROPERTY(VisibleInstanceOnly)
+	AItem* OverlappingItem;
+
+	UPROPERTY(EditDefaultsOnly, Category = Montages)
+	UAnimMontage* EquipMontage;
+
+	ECharacterState CharacterState = ECharacterState::ECS_Unequipped;
+
+	UPROPERTY(BlueprintReadWrite, meta = (AllowPrivateAccess = "true"))
+	EActionState ActionState = EActionState::EAS_Unoccupied;
+
+	UPROPERTY()
+	USlashOverlay* SlashOverlay;
+
+public:
+	FORCEINLINE ECharacterState GetCharacterState() const { return CharacterState; }
+	FORCEINLINE EActionState GetActionState() const { return ActionState; }
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Components\AttributeComponent.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Components/ActorComponent.h"
+#include "AttributeComponent.generated.h"
+
+
+UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
+class SLASH_API UAttributeComponent : public UActorComponent
+{
+	GENERATED_BODY()
+
+public:	
+	UAttributeComponent();
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	void RegenStamina(float DeltaTime);
+
+protected:
+	virtual void BeginPlay() override;
+
+private:
+	//Current Health
+	UPROPERTY(EditAnywhere, Category = "Actor Attributes")
+	float Health;
+
+	UPROPERTY(EditAnywhere, Category = "Actor Attributes")
+	float MaxHealth;
+
+	UPROPERTY(EditAnywhere, Category = "Actor Attributes")
+	float Stamina;
+
+	UPROPERTY(EditAnywhere, Category = "Actor Attributes")
+	float MaxStamina;
+
+	UPROPERTY(EditAnywhere, Category = "Actor Attributes")
+	int32 Gold;
+
+	UPROPERTY(EditAnywhere, Category = "Actor Attributes")
+	int32 Souls;
+
+	UPROPERTY(EditAnywhere, Category = "Actor Attributes")
+	float DodgeCost = 14;
+
+	UPROPERTY(EditAnywhere, Category = "Actor Attributes")
+	float StaminaRengeRate = 2;
+
+public:	
+
+	void ReceiveDamage(float Damage);
+	void UseStamina(float StaminaCost);
+	float GetHealthPercent();
+	float GetStaminaPercent();
+	bool IsAlive();
+	virtual void AddSouls(int32 AmountOfSouls);
+	virtual void AddGold(int32 AmountOfGold);
+	FORCEINLINE int32 GetSouls() { return Souls; }
+	FORCEINLINE int32 GetGold() { return Gold; }
+	FORCEINLINE float GetDodgeCost() { return DodgeCost; }
+	FORCEINLINE float GetStamina() { return Stamina; }
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Enemy\Enemy.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Character/BaseCharacter.h"
+#include "Character/CharacterType.h"
+#include "Enemy.generated.h"
+
+class UHealthBarComponent;
+class UPawnSensingComponent;
+
+UCLASS()
+class SLASH_API AEnemy : public ABaseCharacter
+{
+	GENERATED_BODY()
+
+public:
+	AEnemy();
+
+	/** <AActor> */
+	virtual void Tick(float DeltaTime) override;
+	virtual float TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator, AActor* DamageCauser) override;
+	virtual void Destroyed() override;
+	/** </AActor> */
+
+	/** <IHitInterface> */
+	virtual void GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter) override;
+	/** </IHitInterface> */
+
+protected:
+	/** <AActor> */
+	virtual void BeginPlay() override;
+	/** </AActor> */
+
+	/** <ABaseCharacter> */
+	virtual void Die() override;
+	void SpawnSoul();
+	virtual void Attack() override;
+	virtual bool CanAttack() override;
+	virtual void AttackEnd() override;
+	virtual void HandleDamage(float DamageAmount) override;
+	/** </ABaseCharacter> */
+
+	UPROPERTY(BlueprintReadOnly)
+	EEnemyState EnemyState = EEnemyState::EES_Patrolling;
+private:
+
+	/** AI Behavior */
+	void InitializeEnemy();
+	void CheckPatrolTarget();
+	void CheckCombatTarget();
+	void PatrolTimerFinished();
+	void HideHealthBar();
+	void ShowHealthBar();
+	void LoseInterest();
+	void StartPatrolling();
+	void ChaseTarget();
+	bool IsOutsideCombatRadius();
+	bool IsOutsideAttackRadius();
+	bool IsInsideAttackRadius();
+	bool IsChasing();
+	bool IsAttacking();
+	bool IsDead();
+	bool IsEngaged();
+	void ClearPatrolTimer();
+	void StartAttackTimer();
+	void ClearAttackTimer();
+	bool InTargetRange(AActor* Target, double Radius);
+	void MoveToTarget(AActor* Target);
+	AActor* ChoosePatrolTarget();
+	void SpawnDefaultWeapon();
+
+
+	UFUNCTION()
+	void PawnSeen(APawn* SeenPawn); // Callback for OnPawnSeen in UPawnSensingComponent
+
+	UPROPERTY(VisibleAnywhere)
+	UHealthBarComponent* HealthBarWidget;
+
+	UPROPERTY(VisibleAnywhere)
+	UPawnSensingComponent* PawnSensing;
+
+	UPROPERTY(EditAnywhere)
+	TSubclassOf<class AWeapon> WeaponClass;
+
+	UPROPERTY(EditAnywhere)
+	double CombatRadius = 500.f;
+
+	UPROPERTY(EditAnywhere)
+	double AttackRadius = 150.f;
+
+	UPROPERTY()
+	class AAIController* EnemyController;
+
+	// Current patrol target
+	UPROPERTY(EditInstanceOnly, Category = "AI Navigation")
+	AActor* PatrolTarget;
+
+	UPROPERTY(EditInstanceOnly, Category = "AI Navigation")
+	TArray<AActor*> PatrolTargets;
+
+	UPROPERTY(EditAnywhere)
+	double PatrolRadius = 200.f;
+
+	FTimerHandle PatrolTimer;
+
+	UPROPERTY(EditAnywhere, Category = "AI Navigation")
+	float PatrolWaitMin = 5.f;
+
+	UPROPERTY(EditAnywhere, Category = "AI Navigation")
+	float PatrolWaitMax = 10.f;
+
+	UPROPERTY(EditAnywhere, Category = Combat)
+	float PatrollingSpeed = 125.f;
+
+	FTimerHandle AttackTimer;
+
+	UPROPERTY(EditAnywhere, Category = Combat)
+	float AttackMin = 0.5f;
+
+	UPROPERTY(EditAnywhere, Category = Combat)
+	float AttackMax = 1.f;
+
+	UPROPERTY(EditAnywhere, Category = Combat)
+	float ChasingSpeed = 300.f;
+
+	UPROPERTY(EditAnywhere, Category = Combat)
+	float DeathLifeSpan = 8.f;
+
+	UPROPERTY(EditAnywhere, Category = Combat)
+	TSubclassOf<class ASoul> SoulClass;
+};
+
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\HUD\HealthBar.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Blueprint/UserWidget.h"
+#include "HealthBar.generated.h"
+
+/**
+ * 
+ */
+UCLASS()
+class SLASH_API UHealthBar : public UUserWidget
+{
+	GENERATED_BODY()
+	
+public:
+	UPROPERTY(meta = (BindWidget))
+	class UProgressBar* HealthBar;
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\HUD\HealthBarComponent.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Components/WidgetComponent.h"
+#include "HealthBarComponent.generated.h"
+
+/**
+ * 
+ */
+UCLASS()
+class SLASH_API UHealthBarComponent : public UWidgetComponent
+{
+	GENERATED_BODY()
+	
+public:
+	void SetHealthPercent(float Percent);
+
+private:
+	UPROPERTY()
+	class UHealthBar* HealthBarWidget;
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\HUD\SlashHud.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/HUD.h"
+#include "SlashHud.generated.h"
+
+class USlashOverlay;
+
+UCLASS()
+class SLASH_API ASlashHud : public AHUD
+{
+	GENERATED_BODY()
+	
+protected:
+	virtual void BeginPlay() override;
+
+private:
+	UPROPERTY(EditDefaultsOnly, Category = Slash)
+	TSubclassOf<USlashOverlay> SlashOverlayClass;
+
+	UPROPERTY()
+	USlashOverlay* SlashOverlay;
+
+public:
+	FORCEINLINE USlashOverlay* GetSlashOverlay() { return SlashOverlay; }
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\HUD\SlashOverlay.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Blueprint/UserWidget.h"
+#include "SlashOverlay.generated.h"
+
+UCLASS()
+class SLASH_API USlashOverlay : public UUserWidget
+{
+	GENERATED_BODY()
+	
+public:
+	void SetHealthBarPercent(float Percent);
+	void SetStaminaBarPercent(float Percent);
+	void SetGold(int32 Gold);
+	void SetSouls(int32 Souls);
+
+private:
+	UPROPERTY(meta = (BindWidget))
+	class UProgressBar* HealthProgressBar;
+
+	UPROPERTY(meta = (BindWidget))
+	class UProgressBar* StaminaProgressBar;
+
+	UPROPERTY(meta = (BindWidget))
+	class UTextBlock* GoldText;
+
+	UPROPERTY(meta = (BindWidget))
+	class UTextBlock* SoulsText;
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Interface\HitInterface.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "UObject/Interface.h"
+#include "HitInterface.generated.h"
+
+// This class does not need to be modified.
+UINTERFACE(MinimalAPI)
+class UHitInterface : public UInterface
+{
+	GENERATED_BODY()
+};
+
+/**
+ * 
+ */
+class SLASH_API IHitInterface
+{
+	GENERATED_BODY()
+
+	// Add interface functions to this class. This is the class that will be inherited to implement this interface.
+public:
+	UFUNCTION(BlueprintNativeEvent)
+	void GetHit(const FVector& ImpactPoint, AActor* Hitter);
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Interface\PickupInterface.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "UObject/Interface.h"
+#include "PickupInterface.generated.h"
+
+// This class does not need to be modified.
+UINTERFACE(MinimalAPI)
+class UPickupInterface : public UInterface
+{
+	GENERATED_BODY()
+};
+
+/**
+ * 
+ */
+class SLASH_API IPickupInterface
+{
+	GENERATED_BODY()
+
+	// Add interface functions to this class. This is the class that will be inherited to implement this interface.
+public:
+	virtual void SetOverlappingItem(class AItem* Item);
+	virtual void AddSouls(class ASoul* Soul);
+	virtual void AddGold(class ATreasure* Gold);
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Public\Pawns\Bird.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Pawn.h"
+#include "Bird.generated.h"
+
+class UCapsuleComponent;
+class USkeletalMeshComponent;
+class USpringArmComponent;
+class UCameraComponent;
+
+UCLASS()
+class SLASH_API ABird : public APawn
+{
+	GENERATED_BODY()
+
+public:
+	ABird();
+
+	virtual void Tick(float DeltaTime) override;
+
+	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+
+protected:
+	virtual void BeginPlay() override;
+	void MoveForward(float value);
+	void Turn(float value);
+	void LookUp(float value);
+	
+private:
+	UPROPERTY(VisibleAnywhere)
+	UCapsuleComponent* Capsule;
+
+	UPROPERTY(VisibleAnywhere)
+	USkeletalMeshComponent* BirdMesh;
+
+	UPROPERTY(VisibleAnywhere)
+	USpringArmComponent* CameraBoom;
+
+	UPROPERTY(VisibleAnywhere)
+	UCameraComponent* ViewCamera;
+};
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\DebugMacros.h
+#pragma once
+#include "DrawDebugHelpers.h"
+
+#define DRAW_SPHERE(Location) if (GetWorld()) DrawDebugSphere(GetWorld(), Location, 25.f, 12, FColor::Red, true);
+#define DRAW_SPHERE(Location, COLOR) DrawDebugSphere(GetWorld(), Location, 8.f, 12, COLOR, false, 5.f);
+#define DRAW_LINE(StartLocation, EndLocation) if (GetWorld()) DrawDebugLine(GetWorld(), StartLocation, EndLocation, FColor::Red, true, -1.f, 0, 1.f);
+#define DRAW_POINT(Location) if (GetWorld()) DrawDebugPoint(GetWorld(), Location, 15.f, FColor::Red, true);
+#define DRAW_VECTOR(StartLocation, EndLocation) if (GetWorld()) \
+	{ \
+		DrawDebugLine(GetWorld(), StartLocation, EndLocation, FColor::Red, true, -1.f, 0, 1.f); \
+		DrawDebugPoint(GetWorld(), EndLocation, 15.f, FColor::Red, true); \
+	}
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Slash.cpp
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#include "Slash.h"
+#include "Modules/ModuleManager.h"
+
+IMPLEMENT_PRIMARY_GAME_MODULE( FDefaultGameModuleImpl, Slash, "Slash" );
+
+
+// ==========================================
+
+
+C:\UE_project\Slash\Source\Slash\Slash.h
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+
+
+
+// ==========================================
+
+
