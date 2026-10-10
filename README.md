@@ -92,4 +92,4 @@ Source/Slash/
 - 引擎：Unreal Engine 5.6（`MotionWarping`、`ModelingToolsEditorMode` 插件）
 - 语言：C++；内容配置与表现层由蓝图承担（C++ 提供基类与可扩展点）
 - 项目采用"**C++ 定架构、蓝图做内容**"的分工：所有动画通知点（`AttackEnd / DodgeEnd / SetWeaponCollisionEnabled` 等）都是 `BlueprintCallable`，节奏由动画蓝图掌握
-- 本项目参考Druid Mesh的The Ultimate Developer Course教程，代码均经过自身理解且对敌人受击和死亡流程、可破坏物的碎裂、翻滚等地方按自己的需求做了修改
+- 本项目参考Stephen Ulibarri的The Ultimate Developer Course教程，代码均经过自身理解且对敌人受击和死亡流程、可破坏物的碎裂、翻滚等地方按自己的需求做了修改
