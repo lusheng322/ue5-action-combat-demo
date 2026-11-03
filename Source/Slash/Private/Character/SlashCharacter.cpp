@@ -75,6 +75,7 @@ void ASlashCharacter::Jump()
 
 float ASlashCharacter::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
+	if (bDeathProcessed || DamageAmount <= 0.f) return 0.f;
 	if (ActionState == EActionState::EAS_Dodge) return 0.f;	// invincible while dodging
 	HandleDamage(DamageAmount);
 	SetHUDHealth();
@@ -83,6 +84,7 @@ float ASlashCharacter::TakeDamage(float DamageAmount, FDamageEvent const& Damage
 
 void ASlashCharacter::GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter)
 {
+	if (bDeathProcessed || !IsAlive()) return;
 	if (ActionState == EActionState::EAS_Dodge) return;	// invincible while dodging: skip hit react too
 	Super::GetHit_Implementation(ImpactPoint, Hitter);
 	SetWeaponCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -223,11 +225,13 @@ void ASlashCharacter::EquipWeapon(AWeapon* Weapon)
 
 void ASlashCharacter::AttackEnd()
 {
+	if (bDeathProcessed || ActionState != EActionState::EAS_Attacking) return;
 	ActionState = EActionState::EAS_Unoccupied;
 }
 
 void ASlashCharacter::DodgeEnd()
 {
+	if (bDeathProcessed || ActionState != EActionState::EAS_Dodge) return;
 	Super::DodgeEnd();
 	ActionState = EActionState::EAS_Unoccupied;
 }
@@ -293,8 +297,12 @@ void ASlashCharacter::PlayEquipMontage(const FName& SectionName)
 
 void ASlashCharacter::Die()
 {
+	if (bDeathProcessed) return;
 	Super::Die();
 	ActionState = EActionState::EAS_Dead;
+	StopAttackMontage();
+	SetWeaponCollisionEnabled(ECollisionEnabled::NoCollision);
+	DisableCapsule();
 	DisableMeshCollision();
 }
 
@@ -310,11 +318,13 @@ bool ASlashCharacter::IsOccupied()
 
 void ASlashCharacter::FinishEquipping()
 {
+	if (bDeathProcessed || ActionState != EActionState::EAS_EquippingWeapon) return;
 	ActionState = EActionState::EAS_Unoccupied;
 }
 
 void ASlashCharacter::HitReactEnd()
 {
+	if (bDeathProcessed || ActionState != EActionState::EAS_HitReaction) return;
 	ActionState = EActionState::EAS_Unoccupied;
 }
 

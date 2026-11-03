@@ -22,6 +22,7 @@ public:
 	virtual void Tick(float DeltaTime) override;
 
 protected:
+	bool bDeathProcessed = false;
 	virtual void BeginPlay() override;
 	virtual void GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter) override;
 	virtual void Attack();

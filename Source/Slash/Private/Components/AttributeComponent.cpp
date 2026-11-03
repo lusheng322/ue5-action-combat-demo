@@ -41,12 +41,12 @@ void UAttributeComponent::UseStamina(float StaminaCost)
 
 float UAttributeComponent::GetHealthPercent()
 {
-	return Health / MaxHealth;
+	return MaxHealth > 0.f ? FMath::Clamp(Health / MaxHealth, 0.f, 1.f) : 0.f;
 }
 
 float UAttributeComponent::GetStaminaPercent()
 {
-	return Stamina / MaxStamina;
+	return MaxStamina > 0.f ? FMath::Clamp(Stamina / MaxStamina, 0.f, 1.f) : 0.f;
 }
 
 bool UAttributeComponent::IsAlive()

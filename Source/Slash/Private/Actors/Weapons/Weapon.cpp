@@ -79,7 +79,7 @@ void AWeapon::AttachMeshToSocket(USceneComponent* InParent, const FName& InSocke
 
 void AWeapon::OnBoxOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
 {
-	if (ActorIsSameType(OtherActor)) return;
+	if (!IsValid(OtherActor) || OtherActor == GetOwner() || ActorIsSameType(OtherActor)) return;
 
 	FHitResult BoxHit;
 	BoxTrace(BoxHit);
@@ -88,7 +88,8 @@ void AWeapon::OnBoxOverlap(UPrimitiveComponent* OverlappedComponent, AActor* Oth
 	{
 		if (ActorIsSameType(BoxHit.GetActor())) return;
 
-		UGameplayStatics::ApplyDamage(BoxHit.GetActor(), Damage, GetInstigator()->GetController(), this, UDamageType::StaticClass());
+		AController* InstigatorController = IsValid(GetInstigator()) ? GetInstigator()->GetController() : nullptr;
+		UGameplayStatics::ApplyDamage(BoxHit.GetActor(), Damage, InstigatorController, this, UDamageType::StaticClass());
 		ExecuteGetHit(BoxHit);
 		CreateFields(BoxHit.ImpactPoint);
 	}
@@ -97,7 +98,8 @@ void AWeapon::OnBoxOverlap(UPrimitiveComponent* OverlappedComponent, AActor* Oth
 
 bool AWeapon::ActorIsSameType(AActor* OtherActor)
 {
-	return GetOwner()->ActorHasTag(TEXT("Enemy")) && OtherActor->ActorHasTag(TEXT("Enemy"));
+	return IsValid(GetOwner()) && IsValid(OtherActor) &&
+		GetOwner()->ActorHasTag(TEXT("Enemy")) && OtherActor->ActorHasTag(TEXT("Enemy"));
 }
 
 void AWeapon::ExecuteGetHit(FHitResult& BoxHit)
@@ -116,6 +118,7 @@ void AWeapon::BoxTrace(FHitResult& BoxHit)
 
 	TArray<AActor*> ActorsToIgnore;
 	ActorsToIgnore.Add(this);
+	if (IsValid(GetOwner())) ActorsToIgnore.Add(GetOwner());
 
 	for (AActor* Actor : IgnoreActors)
 	{

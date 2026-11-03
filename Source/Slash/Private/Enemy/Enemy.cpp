@@ -51,8 +51,14 @@ void AEnemy::Tick(float DeltaTime)
 
 float AEnemy::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
+	if (IsDead() || DamageAmount <= 0.f) return 0.f;
 	HandleDamage(DamageAmount);
-	CombatTarget = EventInstigator->GetPawn();
+	if (IsDead()) return DamageAmount;
+	if (IsValid(EventInstigator) && IsValid(EventInstigator->GetPawn()))
+	{
+		CombatTarget = EventInstigator->GetPawn();
+	}
+	if (!IsValid(CombatTarget) || IsBusy()) return DamageAmount;
 	if (IsInsideAttackRadius())
 	{
 		EnemyState = EEnemyState::EES_Attacking;
@@ -67,6 +73,9 @@ float AEnemy::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AC
 
 void AEnemy::Destroyed()
 {
+	ClearPatrolTimer();
+	ClearAttackTimer();
+	ClearHitReactTimer();
 	Super::Destroyed();
 	if (EquippedWeapon)
 	{
@@ -76,6 +85,7 @@ void AEnemy::Destroyed()
 
 void AEnemy::GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter)
 {
+	if (IsDead()) return;
 	Super::GetHit_Implementation(ImpactPoint, Hitter);
 	if (IsDead()) return;
 	if(!IsDead()) ShowHealthBar();
@@ -98,8 +108,10 @@ void AEnemy::BeginPlay()
 
 void AEnemy::Die()
 {
+	if (bDeathProcessed) return;
 	Super::Die();
 	EnemyState = EEnemyState::EES_Dead;
+	ClearPatrolTimer();
 	ClearAttackTimer();
 	ClearHitReactTimer();
 
@@ -130,7 +142,7 @@ void AEnemy::SpawnSoul()
 void AEnemy::Attack()
 {
 	Super::Attack();
-	if (CombatTarget == nullptr) return;
+	if (IsDead() || IsBusy() || !IsValid(CombatTarget)) return;
 	EnemyState = EEnemyState::EES_Engaged;
 	PlayAttackMontage();
 }
@@ -147,12 +159,14 @@ bool AEnemy::CanAttack()
 
 void AEnemy::AttackEnd()
 {
+	if (IsDead() || !IsEngaged()) return;
 	EnemyState = EEnemyState::EES_NoState;
 	CheckCombatTarget();
 }
 
 void AEnemy::HitReactEnd()
 {
+	if (IsDead() || !IsHitReacting()) return;
 	ClearHitReactTimer();
 	EnemyState = EEnemyState::EES_NoState;
 	CheckCombatTarget();
@@ -188,6 +202,7 @@ void AEnemy::CheckPatrolTarget()
 
 void AEnemy::CheckCombatTarget()
 {
+	if (IsDead() || IsBusy()) return;
 	if (IsOutsideCombatRadius())
 	{
 		ClearAttackTimer();
@@ -207,6 +222,7 @@ void AEnemy::CheckCombatTarget()
 
 void AEnemy::PatrolTimerFinished()
 {
+	if (IsDead() || IsBusy() || EnemyState != EEnemyState::EES_Patrolling) return;
 	MoveToTarget(PatrolTarget);
 }
 
@@ -355,6 +371,7 @@ void AEnemy::SpawnDefaultWeapon()
 	if (World && WeaponClass)
 	{
 		AWeapon* DefaultWeapon = World->SpawnActor<AWeapon>(WeaponClass);
+		if (!DefaultWeapon) return;
 		DefaultWeapon->Equip(GetMesh(), FName("RightHandSocket"), this, this);
 		EquippedWeapon = DefaultWeapon;
 	}
@@ -362,6 +379,7 @@ void AEnemy::SpawnDefaultWeapon()
 
 void AEnemy::PawnSeen(APawn* SeenPawn)
 {
+	if (IsDead() || IsBusy() || !IsValid(SeenPawn)) return;
 	const bool bShouldChaseTarget =
 		EnemyState != EEnemyState::EES_Dead &&
 		EnemyState != EEnemyState::EES_Chasing &&

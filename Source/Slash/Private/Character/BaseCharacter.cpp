@@ -24,11 +24,11 @@ void ABaseCharacter::BeginPlay()
 
 void ABaseCharacter::GetHit_Implementation(const FVector& ImpactPoint, AActor* Hitter)
 {
-	if (IsAlive() && Hitter)
+	if (bDeathProcessed || !IsAlive()) return;
+	if (IsValid(Hitter))
 	{
 		DirectionalHitReact(Hitter->GetActorLocation());
 	}
-	else Die();
 
 	PlayHitSound(ImpactPoint);
 	SpawnHitParticles(ImpactPoint);
@@ -45,6 +45,8 @@ void ABaseCharacter::Attack()
 
 void ABaseCharacter::Die()
 {
+	if (bDeathProcessed) return;
+	bDeathProcessed = true;
 	PlayDeathMontage();
 	Tags.Add(FName("Dead"));
 }
@@ -122,6 +124,7 @@ void ABaseCharacter::HandleDamage(float DamageAmount)
 	if (Attributes)
 	{
 		Attributes->ReceiveDamage(DamageAmount);
+		if (!IsAlive()) Die();
 	}
 }
 
